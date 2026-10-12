@@ -78,7 +78,7 @@ class Robots:
         return rules
 
 
-MAX_REDIRECTS = 5
+MAX_REDIRECTS = 10
 
 
 def fetch_static(url: str, allow=None) -> tuple[str | None, str]:
