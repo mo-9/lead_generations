@@ -259,7 +259,8 @@ def best_email(emails: list[str], site_host: str, person: str = "") -> str:
             s -= 4
         elif local.startswith(WEAK_PREFIXES):
             s -= 1
-        if any(n in local for n in first_names):
+        if any(n in local if len(n) > 3 else re.search(rf"(?:^|[._+-]){n}(?:$|[._+-])", local)
+               for n in first_names):                  # 'ali' must not match 'khalid@' or 'quality@'
             s += 4
         return s
 
