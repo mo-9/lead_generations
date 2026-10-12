@@ -12,10 +12,11 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import settings as S
 from common import (Pacer, StopScraping, area_name_variants, box_from_setting, contains_phrase, excel_safe,
-                    fmt_duration, log, normalize_name, phone_digits, setup_logging)
+                    fmt_duration, host_of, log, normalize_name, phone_digits, setup_logging)
 from store import Store
 
 try:
@@ -287,6 +288,19 @@ def log_enrich(i, total, row, status, data) -> None:
     log.info(f"   [{i}/{total}] {row['name']} -> {detail}")
 
 
+def website_key(url: str) -> str:
+    """Branches listing the same website share one visit (http/https, 'www.' and a trailing '/' don't matter)."""
+    p = urlparse(url)
+    return f"{host_of(url)}{p.path.rstrip('/')}?{p.query}"
+
+
+def by_website(rows) -> list[list]:
+    groups = defaultdict(list)
+    for r in rows:
+        groups[website_key(r["website"])].append(r)
+    return list(groups.values())
+
+
 def run_enrichment(store: Store, plan, areas, context) -> None:
     hits = selected_hits(store, plan, areas)
     rows = [r for r in store.places() if r["place_key"] in hits and r["website"] and not lead_problem(r)
@@ -295,38 +309,45 @@ def run_enrichment(store: Store, plan, areas, context) -> None:
     needs_js = [r for r in rows if r["enrich_status"] == "needs_js"]
     robots = Robots()
     if static:
-        log.info(f"Visiting {len(static)} websites (homepage + contact / about / team pages)...")
+        groups = by_website(static)
+        log.info(f"Visiting {len(groups)} websites (homepage + contact / about / team pages)...")
         pool = ThreadPoolExecutor(ENRICH_WORKERS)
         try:
-            futures = {pool.submit(enrich_website, r["website"], r["name"], robots, S.SKIP_WEBSITE_DOMAINS): r
-                       for r in static}
-            for i, future in enumerate(as_completed(futures), 1):
-                row = futures[future]
+            futures = {pool.submit(enrich_website, g[0]["website"], g[0]["name"], robots, S.SKIP_WEBSITE_DOMAINS): g
+                       for g in groups}
+            i = 0
+            for future in as_completed(futures):
                 try:
                     status, data = future.result()
                 except Exception:
                     status, data = "unreachable", {}
-                store.save_enrichment(row["place_key"], status, data)
-                log_enrich(i, len(static), row, status, data)
-                if status == "needs_js":
-                    needs_js.append(row)
+                for row in futures[future]:
+                    i += 1
+                    store.save_enrichment(row["place_key"], status, data)
+                    log_enrich(i, len(static), row, status, data)
+                    if status == "needs_js":
+                        needs_js.append(row)
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
     if needs_js:
-        log.info(f"Opening {len(needs_js)} websites that need a real browser to show their content...")
+        groups = by_website(needs_js)
+        log.info(f"Opening {len(groups)} websites that need a real browser to show their content...")
         page = context.new_page()
         try:
             fetch = browser_fetcher(page)
-            for i, row in enumerate(needs_js, 1):
+            i = 0
+            for group in groups:
                 try:
-                    status, data = enrich_website(row["website"], row["name"], robots, S.SKIP_WEBSITE_DOMAINS,
-                                                  fetch=fetch)
+                    status, data = enrich_website(group[0]["website"], group[0]["name"], robots,
+                                                  S.SKIP_WEBSITE_DOMAINS, fetch=fetch)
                 except Exception:
                     status, data = "unreachable", {}
                 if status == "needs_js":
                     status = "nothing"
-                store.save_enrichment(row["place_key"], status, data)
-                log_enrich(i, len(needs_js), row, status, data)
+                for row in group:
+                    i += 1
+                    store.save_enrichment(row["place_key"], status, data)
+                    log_enrich(i, len(needs_js), row, status, data)
         finally:
             page.close()
 
