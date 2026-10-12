@@ -107,10 +107,13 @@ def fetch_static(url: str, allow=None) -> tuple[str | None, str]:
         if ctype and "html" not in ctype and "xml" not in ctype:
             return None, "not a web page"
         data = b""
-        for chunk in r.iter_content(65536):
-            data += chunk
-            if len(data) > MAX_BYTES:
-                break
+        try:
+            for chunk in r.iter_content(65536):
+                data += chunk
+                if len(data) > MAX_BYTES:
+                    break
+        except requests.RequestException:                   # cut-off / broken body
+            return None, "unreachable"
         encoding = r.encoding if r.encoding and r.encoding.lower() != "iso-8859-1" else None
     m = re.search(rb"<meta[^>]+charset=[\"']?([\w-]+)", data[:4096], re.I)
     if m:
