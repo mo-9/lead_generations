@@ -642,7 +642,9 @@ def enrich_website(website: str, business_name: str, robots: Robots, skip_domain
         allowed, delay = robots.check(url)
         if not allowed:
             continue
-        time.sleep(max(random.uniform(*PAGE_DELAY), min(delay, 30)))
+        if delay > 60:                                  # the site asks for very slow visits: homepage only
+            break
+        time.sleep(max(random.uniform(*PAGE_DELAY), delay))
         site = host_of(final_url)
         page_url, page_html = fetch(url, lambda u: robots.check(u)[0] if same_site(u, site) else False)
         if page_url:
