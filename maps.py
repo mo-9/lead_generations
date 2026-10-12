@@ -367,8 +367,9 @@ class MapsClient:
                 state = {"error": clean(str(e)).split(" Call log")[0][:100]}
             took = time.time() - started
             if state.get("signed_in"):
-                raise StopScraping("A Google account is signed in inside the scraper's browser. "
-                                   "Delete the folder output/browser_profile and run again.")
+                raise StopScraping("A Google account is signed in inside the scraper's browser. Delete the "
+                                   "browser_profile folders in output (or set BROWSER = \"chromium\" in settings.py) "
+                                   "and run again.")
             if state.get("consent"):
                 self._answer_consent()
                 continue
