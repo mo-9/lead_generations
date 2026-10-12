@@ -144,12 +144,23 @@ def browser_fetcher(page):
 
 # ───────────────────────────── which pages ─────────────────────────────
 
-PAGE_KINDS = [
-    ("contact", re.compile(r"contact|get[-_ ]?in[-_ ]?touch|reach[-_ ]?us|enquir|inquir|اتصل|تواصل", re.I)),
-    ("about", re.compile(r"about|who[-_ ]?we[-_ ]?are|our[-_ ]?story|company[-_ ]?profile|من[-_ ]?نحن|عن[-_ ]", re.I)),
-    ("team", re.compile(r"team|leadership|management|founders?|our[-_ ]?people|doctors|dentists|physicians|"
-                        r"specialists|lawyers|attorneys|partners|experts|staff|board|فريق|الأطباء", re.I)),
+TEAM_WORD = (r"(?:our|the|meet)*(?:team|leadership|leaders|management|founders?|people|doctors|dentists|physicians|"
+             r"specialists|lawyers|attorneys|partners|experts|staff|board|directors|members|فريق|فريقنا|الأطباء|"
+             r"أطباؤنا)s?")
+FILLER_WORD = r"our|the|meet|us|en|ar|of|and|page|html?|php|aspx|العمل"
+PAGE_KINDS = [   # (kind, pattern, whole): whole = every word of the slug / link text must fit the pattern
+    ("contact", re.compile(r"contact(?![-_ ]?lens)|get[-_ ]?in[-_ ]?touch|reach[-_ ]?us|enquir|inquir|اتصل|تواصل", re.I),
+     False),
+    ("about", re.compile(r"about|who[-_ ]?we[-_ ]?are|our[-_ ]?story|company[-_ ]?profile|من[-_ ]?نحن|عن[-_ ]", re.I), False),
+    # 'our-team', 'partners', 'board-of-directors' - not 'wealth-management', 'insurance-partners', 'dashboard'
+    ("team", re.compile(rf"(?:(?:{FILLER_WORD}) )*{TEAM_WORD}(?: (?:{FILLER_WORD}|{TEAM_WORD}))*", re.I), True),
 ]
+
+
+def _kind_match(rx, whole: bool, text: str) -> bool:
+    if whole:
+        return rx.fullmatch(" ".join(w for w in re.split(r"[\W_]+", text.lower()) if w)) is not None
+    return rx.search(text) is not None
 SKIP_PATH = re.compile(r"\.(pdf|jpe?g|png|gif|webp|svg|zip|docx?|xlsx?|pptx?|mp4|mp3)$", re.I)
 
 
@@ -178,8 +189,8 @@ def pick_pages(soup: BeautifulSoup, base_url: str) -> dict[str, str]:
             continue
         text = clean(a.get_text(" "))
         text = text if len(text.split()) <= 4 else ""
-        for kind, rx in PAGE_KINDS:
-            if rx.search(segments[-1]) or (text and rx.search(text)):
+        for kind, rx, whole in PAGE_KINDS:
+            if _kind_match(rx, whole, segments[-1]) or (text and _kind_match(rx, whole, text)):
                 score = (len(segments), len(path))
                 if kind not in best or score < best[kind][0]:
                     best[kind] = (score, url)
