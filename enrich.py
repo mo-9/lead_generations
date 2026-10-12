@@ -322,7 +322,7 @@ TITLE_TIERS = [
 ]
 TITLE_RES = [(t, re.compile(rf"(?<![A-Za-z])(?:{rx})(?![A-Za-z])", re.I)) for t, rx in TITLE_TIERS]
 VICE_RE = re.compile(r"vice[- ]president|(?<![A-Za-z])vp(?![A-Za-z])|deputy|assistant|associate", re.I)
-NOT_A_TITLE_RE = re.compile(r"former|(?<![A-Za-z])ex-|junior|assistant to|our partners|partner with|"
+NOT_A_TITLE_RE = re.compile(r"former|(?<![A-Za-z])ex-|junior|assistant to|our partners|partner with|patronage|"
                             r"partnership|directory|directions|^\s*(?:our\s+|the\s+)?board\s+of\s+directors\s*$",
                             re.I)
 # 'CEO at Acme Holding' in a testimonial is a client, not this business's decision-maker
@@ -334,11 +334,29 @@ AR_TITLES = [(1, r"الشريك المؤسس|المؤسس|مؤسس|المالك|
 AR_TITLE_RES = [(t, re.compile(rx)) for t, rx in AR_TITLES]
 
 
+# a title word right after these is not a job title ('Google Partner', 'Become a Partner', 'Business Owner')...
+TITLE_BEFORE_NOT = {"a", "an", "become", "your", "business", "google", "certified", "official", "premier",
+                    "preferred", "trusted", "strategic", "channel"}
+# ...nor one followed by another word, unless it's one of these ('Partner Visa', 'Partner Hospitals')
+TITLE_AFTER_OK = {"and", "of", "at", "for", "in", "uae", "dubai", "mena", "gcc", "middle", "emea", "ksa",
+                  "international", "group", "general", "emeritus", "founder", "cofounder", "owner", "ceo",
+                  "director", "partner", "chairman", "president", "manager", "md"}
+
+
+def _title_in_context(text: str, m) -> bool:
+    before = re.findall(r"[\w'’]+", text[:m.start()])
+    after = re.match(r"\s*([\w'’]+)", text[m.end():])        # punctuation next ('Partner - Tax') is fine
+    if before and before[-1].lower() in TITLE_BEFORE_NOT:
+        return False
+    return not after or not re.match(r"\w", after.group(1)) or after.group(1).lower() in TITLE_AFTER_OK
+
+
 def title_tier(text: str) -> int:
     """1 = owner level, 2 = senior, 3 = director / VP / head / partner, 0 = not a leadership title."""
-    if not text or len(text) > 90 or NOT_A_TITLE_RE.search(text):
+    if not text or len(text) > 90 or NOT_A_TITLE_RE.search(text) or text.rstrip().endswith("?"):
         return 0
-    tiers = [t for t, rx in TITLE_RES if rx.search(text)] + [t for t, rx in AR_TITLE_RES if rx.search(text)]
+    tiers = ([t for t, rx in TITLE_RES if any(_title_in_context(text, m) for m in rx.finditer(text))]
+             + [t for t, rx in AR_TITLE_RES if rx.search(text)])
     if not tiers:
         return 0
     tier = min(tiers)
@@ -385,6 +403,9 @@ AR_STOP = set("من نحن عن اتصل بنا فريق فريقنا الشرك
               "خدماتنا رسالة رؤية رؤيتنا قيمنا كلمة المدير مدير المؤسس الرئيس التنفيذي العام الطبي".split())
 
 
+HISTORIC_RE = re.compile(r"zayed bin sultan|rashid bin saeed", re.I)   # founders of the UAE / modern Dubai
+
+
 def as_name(text: str, allow_arabic_without_title: bool = True) -> str:
     """Return a clean person name if `text` is one (optionally with 'Dr.' and degrees), else ''."""
     text = clean(text).strip(" ,.:;|-–—")
@@ -392,6 +413,8 @@ def as_name(text: str, allow_arabic_without_title: bool = True) -> str:
         return ""
     text = LEAD_IN_RE.sub("", text)
     text = CREDENTIALS_RE.sub("", text).strip(" ,")
+    if HISTORIC_RE.search(text):                     # 'the vision of our Founder, Sheikh Zayed bin Sultan'
+        return ""
     m = AR_NAME_RE.match(text)
     if m:
         words = m.group(2).split()
@@ -453,9 +476,11 @@ def people_from_lines(lines: list[str]) -> list[tuple[int, str, str, int]]:
     found = []
     for i, line in enumerate(lines):
         if len(line) <= 140:
-            parts = SEP_RE.split(line, maxsplit=1)
-            if len(parts) == 2:                                   # 'Name, Title' or 'Title: Name'
-                for name_part, title_part in ((parts[0], parts[1]), (parts[1], parts[0])):
+            sep = SEP_RE.search(line)
+            if sep:                                               # 'Name, Title' or 'Title: Name'
+                parts = (line[:sep.start()], line[sep.end():])
+                orders = [parts] if sep.group().strip() in (",", "(") else [parts, parts[::-1]]
+                for name_part, title_part in orders:              # not 'Partner, Dispute Resolution' reversed
                     tier = title_tier(title_part)
                     name = as_name(name_part) if tier else ""
                     if name and len(title_part) <= 80:
