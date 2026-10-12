@@ -302,6 +302,18 @@ def by_website(rows) -> list[list]:
     return list(groups.values())
 
 
+def enrich_group(group, robots, **kwargs):
+    """One visit for rows sharing a website. Another spelling of the URL (http/https, www) listed by another row
+    is tried if the first can't be reached. All the rows' names count as 'this business' (not an outside client)."""
+    names = " ".join(dict.fromkeys(r["name"] for r in group))
+    status, data = "unreachable", {}
+    for website in dict.fromkeys(r["website"] for r in group):
+        status, data = enrich_website(website, names, robots, S.SKIP_WEBSITE_DOMAINS, **kwargs)
+        if status != "unreachable":
+            break
+    return status, data
+
+
 def run_enrichment(store: Store, plan, areas, context) -> None:
     hits = selected_hits(store, plan, areas)
     rows = [r for r in store.places() if r["place_key"] in hits and r["website"] and not lead_problem(r)
@@ -314,8 +326,7 @@ def run_enrichment(store: Store, plan, areas, context) -> None:
         log.info(f"Visiting {len(groups)} websites (homepage + contact / about / team pages)...")
         pool = ThreadPoolExecutor(ENRICH_WORKERS)
         try:
-            futures = {pool.submit(enrich_website, g[0]["website"], g[0]["name"], robots, S.SKIP_WEBSITE_DOMAINS): g
-                       for g in groups}
+            futures = {pool.submit(enrich_group, g, robots): g for g in groups}
             i = 0
             for future in as_completed(futures):
                 try:
@@ -339,8 +350,7 @@ def run_enrichment(store: Store, plan, areas, context) -> None:
             i = 0
             for group in groups:
                 try:
-                    status, data = enrich_website(group[0]["website"], group[0]["name"], robots,
-                                                  S.SKIP_WEBSITE_DOMAINS, fetch=fetch)
+                    status, data = enrich_group(group, robots, fetch=fetch)
                 except Exception:
                     status, data = "unreachable", {}
                 if status == "needs_js":
