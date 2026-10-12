@@ -358,25 +358,31 @@ AR_TITLE_RES = [(t, re.compile(rx)) for t, rx in AR_TITLES]
 # a title word right after these is not a job title ('Google Partner', 'Become a Partner', 'Business Owner')...
 TITLE_BEFORE_NOT = {"a", "an", "become", "your", "business", "google", "certified", "official", "premier",
                     "preferred", "trusted", "strategic", "channel"}
-# ...nor one followed by another word, unless it's one of these ('Partner Visa', 'Partner Hospitals')
+# ...nor a bare 'partner' / 'owner' followed by another word, unless it's one of these ('Partner Visa',
+# 'Partner Hospitals', 'Owner Operated' - but 'Owner & Lead Stylist', 'Owner Pharmacist', 'Partner - Tax')
 TITLE_AFTER_OK = {"and", "of", "at", "for", "in", "uae", "dubai", "mena", "gcc", "middle", "emea", "ksa",
                   "international", "group", "general", "emeritus", "founder", "cofounder", "owner", "ceo",
-                  "director", "partner", "chairman", "president", "manager", "md"}
+                  "director", "partner", "chairman", "president", "manager", "md", "chef", "pharmacist", "dentist",
+                  "doctor", "physician", "lawyer", "advocate", "architect", "designer", "stylist", "consultant",
+                  "surgeon", "orthodontist", "dermatologist", "engineer", "accountant", "trainer", "photographer"}
 
 
 def _title_in_context(text: str, m) -> bool:
     before = re.findall(r"[\w'’]+", text[:m.start()])
-    after = re.match(r"\s*([\w'’]+)", text[m.end():])        # punctuation next ('Partner - Tax') is fine
     if before and before[-1].lower() in TITLE_BEFORE_NOT:
         return False
+    if m.group().lower() not in ("partner", "owner"):
+        return True
+    after = re.match(r"\s*([\w'’]+)", text[m.end():])        # punctuation next ('Partner - Tax') is fine
     return not after or not re.match(r"\w", after.group(1)) or after.group(1).lower() in TITLE_AFTER_OK
 
 
-def title_tier(text: str) -> int:
-    """1 = owner level, 2 = senior, 3 = director / VP / head / partner, 0 = not a leadership title."""
+def title_tier(text: str, context: bool = True) -> int:
+    """1 = owner level, 2 = senior, 3 = director / VP / head / partner, 0 = not a leadership title.
+    context=False for a field that is a job title by definition (JSON-LD jobTitle)."""
     if not text or len(text) > 90 or NOT_A_TITLE_RE.search(text) or text.rstrip().endswith("?"):
         return 0
-    tiers = ([t for t, rx in TITLE_RES if any(_title_in_context(text, m) for m in rx.finditer(text))]
+    tiers = ([t for t, rx in TITLE_RES if any(not context or _title_in_context(text, m) for m in rx.finditer(text))]
              + [t for t, rx in AR_TITLE_RES if rx.search(text)])
     if not tiers:
         return 0
@@ -551,7 +557,7 @@ def jsonld_data(soup: BeautifulSoup):
                 else:
                     continue
                 title = title if isinstance(title, str) else default
-                tier = title_tier(title or "")
+                tier = title_tier(title or "", context=False)
                 name = as_name(name if isinstance(name, str) else "")
                 if name and tier:
                     people.append((tier, name, tidy_title(title), -1))
