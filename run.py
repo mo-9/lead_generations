@@ -11,6 +11,7 @@ import time
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from itertools import combinations
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -361,18 +362,21 @@ def export(store: Store, plan, areas, out_dir: Path):
     variants = area_name_variants(S.AREAS)
 
     # chain = the same business name at 2+ different locations (among everything seen on Google Maps).
-    # Pins ~20 m apart, or ~100 m apart with the same phone, are one location listed twice.
-    locations = defaultdict(list)
+    # Pins ~20 m apart, or ~100 m apart with the same (or a missing) phone, are one location listed twice.
+    pins = defaultdict(list)
     for p in places:
-        here = locations[normalize_name(p["name"], variants)]
-        lat, lng, phone = p["latitude"], p["longitude"], phone_digits(p["phone"] or p["card_phone"] or "")
-        if lat is None or lng is None or not any(
-                b_lat is not None and (
-                    (abs(lat - b_lat) < 0.0002 and abs(lng - b_lng) < 0.0002)
-                    or (abs(lat - b_lat) < 0.001 and abs(lng - b_lng) < 0.001 and (not phone or not b_phone
-                                                                                    or phone == b_phone)))
-                for b_lat, b_lng, b_phone in here):
-            here.append((lat, lng, phone))
+        if not (p["closed"] or "").startswith("Permanently closed"):     # an old, closed listing isn't a location
+            pins[normalize_name(p["name"], variants)].append(
+                (p["latitude"], p["longitude"], phone_digits(p["phone"] or p["card_phone"] or "")))
+
+    def one_location(a, b) -> bool:
+        if a[0] is None or a[1] is None or b[0] is None or b[1] is None:
+            return False
+        dlat, dlng = abs(a[0] - b[0]), abs(a[1] - b[1])
+        return (dlat < 0.0002 and dlng < 0.0002) or (
+            dlat < 0.001 and dlng < 0.001 and (not a[2] or not b[2] or a[2] == b[2]))
+
+    chains = {norm for norm, ps in pins.items() if any(not one_location(a, b) for a, b in combinations(ps, 2))}
 
     by_key = {p["place_key"]: p for p in places}
     rows, seen = [], set()
@@ -405,7 +409,7 @@ def export(store: Store, plan, areas, out_dir: Path):
             "facebook": p["facebook"] or "",
             "rating": rating if rating is not None else "",
             "review_count": reviews if reviews is not None else "",
-            "is_chain": "Yes" if len(locations[norm]) >= 2 else "No",
+            "is_chain": "Yes" if norm in chains else "No",
             "google_maps_url": maps_link(p["place_id"] or "", p["name"], p["maps_url"]),
             "place_id": p["place_id"] or p["ftid"] or "",
             "latitude": round(p["latitude"], 6) if p["latitude"] is not None else "",
