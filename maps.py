@@ -123,8 +123,9 @@ DETAILS_JS = r"""
       if (/^\s*[\d.,]+\s*[KkMm]?\s+reviews?\s*$/i.test(l)) { reviewsText = l; break; }
     }
   }
-  // the status is a line of its own; a review quoting "permanently closed" is not
-  const closed = ((root.innerText || '').match(/^\s*(Permanently closed|Temporarily closed)\b/im) || ['', ''])[1];
+  // Google's status starts a line or follows a '·'; a review quoting "permanently closed" doesn't count
+  const closed = ((root.innerText || '').match(/(?:^|[·⋅])[\s\u200e\u200f]*(Permanently closed|Temporarily closed)\b/m)
+                  || ['', ''])[1];
   return {
     url: location.href,
     name: title ? title.textContent.trim() : '',

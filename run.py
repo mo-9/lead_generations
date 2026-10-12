@@ -128,7 +128,7 @@ def lead_problem(row) -> str:
     """'' if the place is a lead under the current filters, else the reason it isn't."""
     if row["details_status"] != "ok":
         return "details not loaded"
-    if (row["closed"] or "").lower().startswith("permanently"):
+    if (row["closed"] or "").startswith("Permanently closed"):     # Google's status text, not a review quote
         return "permanently closed"
     rating = row["rating"] if row["rating"] is not None else row["card_rating"]
     reviews = row["review_count"] if row["review_count"] is not None else row["card_reviews"]
