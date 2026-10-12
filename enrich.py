@@ -145,23 +145,43 @@ def browser_fetcher(page):
 
 # ───────────────────────────── which pages ─────────────────────────────
 
-TEAM_WORD = (r"(?:our|the|meet)*(?:team|leadership|leaders|management|founders?|people|doctors|dentists|physicians|"
-             r"specialists|lawyers|attorneys|partners|experts|staff|board|directors|members|فريق|فريقنا|الأطباء|"
-             r"أطباؤنا)s?")
-FILLER_WORD = r"our|the|meet|us|en|ar|of|and|page|html?|php|aspx|العمل"
-PAGE_KINDS = [   # (kind, pattern, whole): whole = every word of the slug / link text must fit the pattern
-    ("contact", re.compile(r"contact(?![-_ ]?lens)|get[-_ ]?in[-_ ]?touch|reach[-_ ]?us|enquir|inquir|اتصل|تواصل", re.I),
-     False),
-    ("about", re.compile(r"about|who[-_ ]?we[-_ ]?are|our[-_ ]?story|company[-_ ]?profile|من[-_ ]?نحن|عن[-_ ]", re.I), False),
-    # 'our-team', 'partners', 'board-of-directors' - not 'wealth-management', 'insurance-partners', 'dashboard'
-    ("team", re.compile(rf"(?:(?:{FILLER_WORD}) )*{TEAM_WORD}(?: (?:{FILLER_WORD}|{TEAM_WORD}))*", re.I), True),
+# Team page words. A slug / link text is a team page when all its words are team words, qualifiers or fillers
+# ('Senior Management', 'Partners & Associates', 'فريقنا الطبي'), or when it ends in a clear team noun
+# ('Our Aesthetic Doctors') - not 'Wealth Management', 'Insurance Partners', 'Team Building', 'Join Our Team'.
+TEAM_NOUNS = {"team", "teams", "leadership", "leaders", "founder", "founders", "doctors", "dentists", "physicians",
+              "lawyers", "attorneys", "فريق", "فريقنا", "الفريق", "الأطباء", "أطباؤنا", "أطبائنا"}
+TEAM_AMBIGUOUS = {"management", "partners", "board", "people", "staff", "experts", "specialists", "مجلس"}
+TEAM_FOLLOWERS = {"members", "member", "directors", "associates", "careers"}  # 'team members', not 'members'
+TEAM_QUALIFIERS = {"medical", "dental", "legal", "clinical", "executive", "senior", "core", "expert", "aesthetic",
+                   "الطبي", "الإدارة", "العمل"}
+TEAM_FILLERS = {"our", "the", "meet", "us", "en", "ar", "of", "and", "page", "html", "htm", "php", "aspx", "asp", "jsp",
+                "shtml", "تعرف", "على"}
+TEAM_DENY = {"join", "hiring", "jobs", "vacancies", "vacancy", "building", "augmentation", "outsourcing", "support"}
+TEAM_KNOWN = TEAM_NOUNS | TEAM_AMBIGUOUS | TEAM_FOLLOWERS | TEAM_QUALIFIERS | TEAM_FILLERS
+
+
+def is_team_page(text: str) -> bool:
+    words = []
+    for w in re.split(r"[\W_]+", text.lower()):
+        w = re.sub(r"(?<=\D)\d+$", "", w)                             # 'team1'
+        if w and not w.isdigit():                                  # 'team-2', '01. Team'
+            bare = re.sub(r"^(?:our|the|meet)+", "", w)               # 'ourteam', 'meettheteam'
+            words.append(bare if bare in TEAM_KNOWN else w)
+    if not words or TEAM_DENY & set(words):
+        return False
+    if set(words) <= TEAM_KNOWN and set(words) & (TEAM_NOUNS | TEAM_AMBIGUOUS):
+        return True
+    content = [w for w in words if w not in TEAM_FILLERS]
+    return bool(content) and content[-1] in TEAM_NOUNS
+
+
+PAGE_KINDS = [
+    ("contact", re.compile(r"contact(?![-_ ]?lens)|get[-_ ]?in[-_ ]?touch|reach[-_ ]?us|enquir|inquir|اتصل|تواصل",
+                           re.I).search),
+    ("about", re.compile(r"about|who[-_ ]?we[-_ ]?are|our[-_ ]?story|company[-_ ]?profile|من[-_ ]?نحن|عن[-_ ]",
+                         re.I).search),
+    ("team", is_team_page),
 ]
-
-
-def _kind_match(rx, whole: bool, text: str) -> bool:
-    if whole:
-        return rx.fullmatch(" ".join(w for w in re.split(r"[\W_]+", text.lower()) if w)) is not None
-    return rx.search(text) is not None
 SKIP_PATH = re.compile(r"\.(pdf|jpe?g|png|gif|webp|svg|zip|docx?|xlsx?|pptx?|mp4|mp3)$", re.I)
 
 
@@ -190,8 +210,8 @@ def pick_pages(soup: BeautifulSoup, base_url: str) -> dict[str, str]:
             continue
         text = clean(a.get_text(" "))
         text = text if len(text.split()) <= 4 else ""
-        for kind, rx, whole in PAGE_KINDS:
-            if _kind_match(rx, whole, segments[-1]) or (text and _kind_match(rx, whole, text)):
+        for kind, match in PAGE_KINDS:
+            if match(segments[-1]) or (text and match(text)):
                 score = (len(segments), len(path))
                 if kind not in best or score < best[kind][0]:
                     best[kind] = (score, url)
