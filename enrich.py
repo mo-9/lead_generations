@@ -77,14 +77,29 @@ class Robots:
         return rules
 
 
-def fetch_static(url: str) -> tuple[str | None, str]:
-    """(final_url, html) or (None, reason)."""
-    try:
-        r = _session().get(url, timeout=TIMEOUT, allow_redirects=True, stream=True)
-    except requests.exceptions.SSLError:
-        return None, "SSL error"
-    except requests.RequestException:
-        return None, "unreachable"
+MAX_REDIRECTS = 5
+
+
+def fetch_static(url: str, allow=None) -> tuple[str | None, str]:
+    """(final_url, html) or (None, reason). Each redirect target is first checked with allow(url):
+    True = follow, False = 'robots' (may not visit), None = 'unreachable' (can't tell now)."""
+    for _ in range(MAX_REDIRECTS + 1):
+        try:
+            r = _session().get(url, timeout=TIMEOUT, allow_redirects=False, stream=True)
+        except requests.exceptions.SSLError:
+            return None, "SSL error"
+        except requests.RequestException:
+            return None, "unreachable"
+        target = _session().get_redirect_target(r)
+        if not target:
+            break
+        r.close()
+        url = urldefrag(urljoin(url, target))[0]
+        ok = allow(url) if allow else True
+        if not ok:
+            return None, "robots" if ok is False else "unreachable"
+    else:
+        return None, "too many redirects"
     with r:
         if r.status_code != 200:
             return None, f"HTTP {r.status_code}"
@@ -108,12 +123,16 @@ def fetch_static(url: str) -> tuple[str | None, str]:
 
 def browser_fetcher(page):
     """Fetch pages with the real browser - only for sites whose content is drawn by JavaScript."""
-    def fetch(url: str) -> tuple[str | None, str]:
+    def fetch(url: str, allow=None) -> tuple[str | None, str]:
         try:
             response = page.goto(url, wait_until="domcontentloaded", timeout=30_000)
             if response is None or response.status != 200:
                 return None, f"HTTP {response.status if response else '?'}"
             page.wait_for_timeout(2500)
+            if allow and page.url.rstrip("/") != url.rstrip("/"):      # redirected: same check as fetch_static
+                ok = allow(page.url)
+                if not ok:
+                    return None, "robots" if ok is False else "unreachable"
             return page.url, page.content()
         except Exception:
             return None, "unreachable"
@@ -131,6 +150,12 @@ PAGE_KINDS = [
 SKIP_PATH = re.compile(r"\.(pdf|jpe?g|png|gif|webp|svg|zip|docx?|xlsx?|pptx?|mp4|mp3)$", re.I)
 
 
+def same_site(url: str, site: str) -> bool:
+    """url is on the website `site` (a host, 'www.' removed) or one of its subdomains."""
+    host = host_of(url)
+    return bool(host) and (host == site or host.endswith("." + site) or site.endswith("." + host))
+
+
 def pick_pages(soup: BeautifulSoup, base_url: str) -> dict[str, str]:
     """Best contact / about / team link on the homepage (same website only)."""
     site = host_of(base_url)
@@ -142,8 +167,7 @@ def pick_pages(soup: BeautifulSoup, base_url: str) -> dict[str, str]:
         url = urldefrag(urljoin(base_url, href))[0]
         if not url.startswith(("http://", "https://")):
             continue
-        host = host_of(url)
-        if host != site and not host.endswith("." + site) and not site.endswith("." + host):
+        if not same_site(url, site):
             continue
         path = urlparse(url).path
         segments = [s for s in unquote(path).split("/") if s]
@@ -599,9 +623,9 @@ def enrich_website(website: str, business_name: str, robots: Robots, skip_domain
         return "unreachable", {}
     if not allowed:
         return "robots", {}
-    final_url, html = fetch(website)
+    final_url, html = fetch(website, lambda u: robots.check(u)[0])     # a moved homepage: its robots.txt rules
     if final_url is None:
-        return "unreachable", {}
+        return ("robots" if html == "robots" else "unreachable"), {}
     if fetch is fetch_static and looks_empty(html):
         return "needs_js", {}
     pages = [("home", final_url, html)]
@@ -616,7 +640,8 @@ def enrich_website(website: str, business_name: str, robots: Robots, skip_domain
         if not allowed:
             continue
         time.sleep(max(random.uniform(*PAGE_DELAY), min(delay, 30)))
-        page_url, page_html = fetch(url)
+        site = host_of(final_url)
+        page_url, page_html = fetch(url, lambda u: robots.check(u)[0] if same_site(u, site) else False)
         if page_url:
             pages.append((kind, page_url, page_html))
     data = analyse(pages, host_of(final_url) or host, business_name)
