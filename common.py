@@ -90,8 +90,11 @@ def parse_rating_label(label: str) -> tuple[float | None, int | None]:
 
 
 def contains_phrase(text: str, phrase: str) -> bool:
-    """Whole-word, case-insensitive match ('spa' does not match 'space')."""
-    return re.search(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)", (text or "").lower()) is not None
+    """Whole-word, case-insensitive match ('spa' does not match 'space', 'Real-Estate' matches 'real estate')."""
+    def words(s):
+        return " ".join(re.findall(r"[^\W_]+", (s or "").lower()))
+    phrase = words(phrase)
+    return bool(phrase) and re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", words(text)) is not None
 
 
 def excel_safe(value):
