@@ -123,7 +123,8 @@ DETAILS_JS = r"""
       if (/^\s*[\d.,]+\s*[KkMm]?\s+reviews?\s*$/i.test(l)) { reviewsText = l; break; }
     }
   }
-  const closed = ((root.innerText || '').match(/Permanently closed|Temporarily closed/i) || [''])[0];
+  // the status is a line of its own; a review quoting "permanently closed" is not
+  const closed = ((root.innerText || '').match(/^\s*(Permanently closed|Temporarily closed)\b/im) || ['', ''])[1];
   return {
     url: location.href,
     name: title ? title.textContent.trim() : '',
