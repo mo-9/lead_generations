@@ -49,13 +49,14 @@ class Robots:
         p = urlparse(url)
         origin = f"{p.scheme}://{p.netloc}"
         with self._lock:
+            cached = origin in self._cache
             rules = self._cache.get(origin)
-        if rules is None:
+        if not cached:
             rules = self._load(origin)
-            if rules is None:                  # robots.txt unreadable for now -> don't crawl, ask again later
-                return None, 0.0
             with self._lock:
                 self._cache[origin] = rules
+        if rules is None:                      # robots.txt unreadable: no crawling this run, the next run asks again
+            return None, 0.0
         if rules is True or rules is False:
             return rules, 0.0
         return rules.can_fetch(USER_AGENT, url), float(rules.crawl_delay(USER_AGENT) or 0)
