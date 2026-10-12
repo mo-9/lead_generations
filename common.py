@@ -124,7 +124,7 @@ def format_phone(raw: str) -> str:
         rest = digits[1:]
     else:
         rest = digits
-    if rest.startswith(("800", "600")) and 6 <= len(rest) <= 10:
+    if rest.startswith(("800", "600")) and 6 <= len(rest) <= 12:
         return f"{rest[:3]} {rest[3:]}"                       # toll-free / call-centre
     if rest.startswith("5") and len(rest) == 9:
         return f"0{rest[:2]} {rest[2:5]} {rest[5:]}"          # mobile
