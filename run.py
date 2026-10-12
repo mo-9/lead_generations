@@ -339,11 +339,19 @@ def export(store: Store, plan, areas, out_dir: Path):
     persona_of = {k.lower(): p for p, k in plan}
     variants = area_name_variants(S.AREAS)
 
-    # chain = the same business name at 2+ different locations (among everything seen on Google Maps)
-    locations = defaultdict(set)
+    # chain = the same business name at 2+ different locations (among everything seen on Google Maps).
+    # Pins ~20 m apart, or ~100 m apart with the same phone, are one location listed twice.
+    locations = defaultdict(list)
     for p in places:
-        loc = (round(p["latitude"], 4), round(p["longitude"], 4)) if p["latitude"] is not None else p["place_key"]
-        locations[normalize_name(p["name"], variants)].add(loc)
+        here = locations[normalize_name(p["name"], variants)]
+        lat, lng, phone = p["latitude"], p["longitude"], phone_digits(p["phone"] or p["card_phone"] or "")
+        if lat is None or lng is None or not any(
+                b_lat is not None and (
+                    (abs(lat - b_lat) < 0.0002 and abs(lng - b_lng) < 0.0002)
+                    or (abs(lat - b_lat) < 0.001 and abs(lng - b_lng) < 0.001 and (not phone or not b_phone
+                                                                                    or phone == b_phone)))
+                for b_lat, b_lng, b_phone in here):
+            here.append((lat, lng, phone))
 
     by_key = {p["place_key"]: p for p in places}
     rows, seen = [], set()
