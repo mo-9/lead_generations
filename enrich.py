@@ -45,13 +45,15 @@ class Robots:
         self._cache: dict = {}
         self._lock = threading.Lock()
 
-    def check(self, url: str) -> tuple[bool, float]:
+    def check(self, url: str) -> tuple[bool | None, float]:
         p = urlparse(url)
         origin = f"{p.scheme}://{p.netloc}"
         with self._lock:
             rules = self._cache.get(origin)
         if rules is None:
             rules = self._load(origin)
+            if rules is None:                  # robots.txt unreadable for now -> don't crawl, ask again later
+                return None, 0.0
             with self._lock:
                 self._cache[origin] = rules
         if rules is True or rules is False:
@@ -63,8 +65,10 @@ class Robots:
         try:
             r = _session().get(origin + "/robots.txt", timeout=TIMEOUT, allow_redirects=True)
         except requests.RequestException:
-            return False                       # can't read robots.txt -> don't crawl (RFC 9309)
-        if r.status_code in (401, 403) or r.status_code >= 500:
+            return None                        # can't read robots.txt -> don't crawl now (RFC 9309), retry later
+        if r.status_code >= 500 or r.status_code == 429:
+            return None
+        if r.status_code in (401, 403):
             return False
         if r.status_code >= 400:
             return True                        # no robots.txt -> everything allowed
@@ -591,6 +595,8 @@ def enrich_website(website: str, business_name: str, robots: Robots, skip_domain
     if not host or domain_in(host, skip_domains):
         return "skipped", {}
     allowed, delay = robots.check(website)
+    if allowed is None:
+        return "unreachable", {}
     if not allowed:
         return "robots", {}
     final_url, html = fetch(website)
