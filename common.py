@@ -167,10 +167,11 @@ def normalize_name(name: str, area_variants=()) -> str:
     s = re.sub(rf"(?<!\w)(?:{_LEGAL_WORDS})(?!\w)\.?", " ", s)
     s = re.sub(r"[^\w\s]", " ", s)          # \w keeps Arabic letters
     s = re.sub(r"\s+", " ", s).strip()
-    for _ in range(2):                       # e.g. '... jlt dubai'
+    for _ in range(3):                       # e.g. '... business bay dubai uae', '... al barsha 1'
         for area in area_variants:
-            if s.endswith(" " + area):
-                rest = s[: -len(area)].strip()
+            m = re.search(rf"\s{re.escape(area)}(?:\s\d{{1,2}})?$", s)
+            if m:
+                rest = s[: m.start()].strip()
                 if len(rest.split()) >= 2:
                     s = rest
                     break
