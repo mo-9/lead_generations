@@ -419,6 +419,8 @@ investment investments capital financial finance wealth insurance accounting aud
 architecture engineering logistics shipping cargo technology technologies tech software it systems
 restaurant cafe coffee salon spa beauty fitness academy institute school nursery training travel tours
 yacht yachts luxury jewellery jewelry boutique gallery motors cars
+dispute disputes resolution litigation arbitration corporate commercial advisory intellectual property employment
+construction banking private client criminal family regulatory compliance
 established founded started joined leads led has have holds brings believes graduated received completed
 specializes specialises offers provides built created opened launched works worked studied trained qualified
 comes came began since over years experience is was as an a his her he she they their who which that this
@@ -503,11 +505,9 @@ def people_from_lines(lines: list[str]) -> list[tuple[int, str, str, int]]:
     found = []
     for i, line in enumerate(lines):
         if len(line) <= 140:
-            sep = SEP_RE.search(line)
-            if sep:                                               # 'Name, Title' or 'Title: Name'
-                parts = (line[:sep.start()], line[sep.end():])
-                orders = [parts] if sep.group().strip() in (",", "(") else [parts, parts[::-1]]
-                for name_part, title_part in orders:              # not 'Partner, Dispute Resolution' reversed
+            parts = SEP_RE.split(line, maxsplit=1)
+            if len(parts) == 2:                                   # 'Name, Title' or 'Title: Name'
+                for name_part, title_part in ((parts[0], parts[1]), (parts[1], parts[0])):
                     tier = title_tier(title_part)
                     name = as_name(name_part) if tier else ""
                     if name and len(title_part) <= 80:
