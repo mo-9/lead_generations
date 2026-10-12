@@ -570,8 +570,8 @@ def _drop_testimonials(soup: BeautifulSoup) -> None:
 
 def _is_external(title: str, business_name: str) -> bool:
     m = EXTERNAL_TITLE_RE.search(title or "")
-    if not m:
-        return False
+    if not m or re.fullmatch(r"(?:the\s+)?(?:company|group|firm|clinic|practice)\.?", m.group(1).strip(), re.I):
+        return False                                   # 'Founder of the Group' = this business
     own = {w for w in re.findall(r"\w{4,}", (business_name or "").lower())}
     return not own & set(re.findall(r"\w{4,}", m.group(1).lower()))
 
