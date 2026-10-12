@@ -45,6 +45,7 @@ Open **`settings.py`** in Notepad, VS Code or any text editor. Everything is the
 | `MIN_RATING`, `MIN_REVIEWS`, `MAX_REVIEWS` | Rating and review filters (`MAX_REVIEWS = 300` targets newer businesses) |
 | `WEBSITE`, `PHONE` | `"must_have"` / `"must_not_have"` / `"either"` |
 | `ENRICH_WEBSITES` | Visit websites for email / socials / decision-maker |
+| `BROWSER` | `"chrome"` (your installed Google Chrome on its own separate profile) or `"chromium"` (bundled) |
 | Speed & safety | Delays, breaks, backoff, when to stop |
 | `PERSONAS`, `AREAS` | The category and area lists. Add or remove freely |
 | `EXCLUDE_...` | Words that exclude competitors (real estate) and government |
@@ -73,7 +74,8 @@ A browser window opens and works on its own. Leave it alone (minimizing it is fi
 | `leads_<date>_<time>.csv` | The lead list. Opens in Excel with Arabic names intact. A new file each run |
 | `progress.db` | Saved progress. Delete it to start completely from scratch |
 | `run.log` | Full log of every run |
-| `browser_profile/` | The scraper's own browser profile (never signed in to Google) |
+| `browser_profile_chrome/` | The scraper's own browser profile (never signed in to Google) |
+| `last_google_page.png` | Only after a stop: what Google was showing at that moment |
 
 The CSV only contains businesses matching the **current** settings (personas, categories, areas, filters).
 
@@ -82,6 +84,8 @@ The CSV only contains businesses matching the **current** settings (personas, ca
 ## 5. If Google pushes back
 
 The scraper keeps a slow, randomized pace and takes regular long breaks. If Google responds slowly or errors, it slows down further and backs off (each wait doubles). If Google shows a CAPTCHA / "unusual traffic" page 3 times in a row, it **stops, saves, writes the CSV and tells you**. Wait a few hours, then run again. It continues where it stopped.
+
+**"Limited view"**: Google sometimes gives signed-out visitors a reduced Maps page that hides review counts. If the counts are still visible, the scraper carries on. If they're hidden, it stops after 3 tries and saves a screenshot. This usually comes from the network (busy office networks especially), so run from another network. You can also switch `BROWSER` in `settings.py`.
 
 Tips:
 - Run big jobs in pieces (a persona or a few areas at a time).
@@ -96,4 +100,3 @@ Tips:
 - Results outside the chosen area are ignored. Duplicates are merged by Google place ID (falling back to name + phone).
 - **is_chain = Yes** when the same business name appears at 2+ locations among everything the scraper has seen. Branch suffixes like "- JLT" are ignored when comparing names.
 - Websites: only the homepage plus one contact, one about and one team page are visited, and robots.txt is respected.
-"# lead_generations" 
