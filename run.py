@@ -28,6 +28,7 @@ except ImportError as missing:
     sys.exit(f"Missing package ({missing.name}). Run:  python -m pip install -r requirements.txt")
 
 AREA_MARGIN = 0.05            # accept places up to 5% outside an area's box
+CUT_OFF_TAIL = 20             # a cut-off list still reaches into the box if one of its last 20 results is inside
 DETAILS_MAX_ATTEMPTS = 2
 ENRICH_MAX_ATTEMPTS = 2
 ENRICH_WORKERS = 4            # websites visited in parallel (different sites, so each site sees one visitor)
@@ -183,6 +184,15 @@ def check_layout(cards) -> None:
                                 "Google may have changed its page layout - the scraper may need an update.")
 
 
+def reaches_into(box, cards) -> bool:
+    """Google pads every list to ~120 with places far outside the map. A cut-off list only hides places of this
+    box if its last results are still inside it; once they are all outside, Google has run out of nearby places."""
+    def inside(c):
+        lat, lng = c.get("latitude"), c.get("longitude")
+        return lat is None or lng is None or box.contains(lat, lng, AREA_MARGIN)
+    return any(inside(c) for c in cards[-CUT_OFF_TAIL:])
+
+
 def run_searches(store: Store, maps: MapsClient, plan, areas) -> None:
     total, n = len(plan) * len(areas), 0
     for area_name, area_box in areas:
@@ -207,14 +217,19 @@ def run_searches(store: Store, maps: MapsClient, plan, areas) -> None:
                     continue
                 check_layout(cards)
                 new, leads = handle_cards(store, maps, cards, persona, keyword, area_name, area_box)
-                capped = len(cards) >= S.CAP_THRESHOLD
+                capped = len(cards) >= S.CAP_THRESHOLD and reaches_into(box, cards)
                 if capped and box.depth < S.MAX_SPLIT_DEPTH:
                     store.set_task(task_id, keyword, area_name, box, "split", len(cards))
                     queue.extend(box.split())
                     note = " -> list cut off by Google, searching 4 smaller parts"
                 else:
                     store.set_task(task_id, keyword, area_name, box, "done", len(cards))
-                    note = " -> still cut off at the smallest size; some places may be missed" if capped else ""
+                    if capped:
+                        note = " -> still cut off at the smallest size; some places may be missed"
+                    elif len(cards) >= S.CAP_THRESHOLD:
+                        note = " -> the end of the list is outside this area, nothing cut off"
+                    else:
+                        note = ""
                 log.info(f"   {len(cards)} results, {new} new, {leads} leads here{note}")
 
 

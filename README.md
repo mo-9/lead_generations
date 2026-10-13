@@ -96,7 +96,7 @@ Tips:
 
 ## How it works (short)
 
-- Each category × area search uses the area's map box. If Google cuts the list off (~120 results), the box is split into 4 smaller boxes and each is searched, repeating until lists are no longer cut off.
+- Each category × area search uses the area's map box. If Google cuts the list off (~120 results) while its last results are still inside the box, the box is split into 4 smaller boxes and each is searched, repeating until lists are no longer cut off.
 - Results outside the chosen area are ignored. Duplicates are merged by Google place ID (falling back to name + phone).
 - **is_chain = Yes** when the same business name appears at 2+ locations among everything the scraper has seen. Branch suffixes like "- JLT" are ignored when comparing names.
 - Websites: only the homepage plus one contact, one about and one team page are visited, and robots.txt is respected.
