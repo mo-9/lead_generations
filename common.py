@@ -90,8 +90,11 @@ def parse_rating_label(label: str) -> tuple[float | None, int | None]:
 
 
 def contains_phrase(text: str, phrase: str) -> bool:
-    """Whole-word, case-insensitive match ('spa' does not match 'space')."""
-    return re.search(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)", (text or "").lower()) is not None
+    """Whole-word, case-insensitive match ('spa' does not match 'space', 'Real-Estate' matches 'real estate')."""
+    def words(s):
+        return " ".join(re.findall(r"[^\W_]+", (s or "").lower()))
+    phrase = words(phrase)
+    return bool(phrase) and re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", words(text)) is not None
 
 
 def excel_safe(value):
@@ -121,7 +124,7 @@ def format_phone(raw: str) -> str:
         rest = digits[1:]
     else:
         rest = digits
-    if rest.startswith(("800", "600")) and 6 <= len(rest) <= 10:
+    if rest.startswith(("800", "600")) and 6 <= len(rest) <= 12:
         return f"{rest[:3]} {rest[3:]}"                       # toll-free / call-centre
     if rest.startswith("5") and len(rest) == 9:
         return f"0{rest[:2]} {rest[2:5]} {rest[5:]}"          # mobile
@@ -164,10 +167,11 @@ def normalize_name(name: str, area_variants=()) -> str:
     s = re.sub(rf"(?<!\w)(?:{_LEGAL_WORDS})(?!\w)\.?", " ", s)
     s = re.sub(r"[^\w\s]", " ", s)          # \w keeps Arabic letters
     s = re.sub(r"\s+", " ", s).strip()
-    for _ in range(2):                       # e.g. '... jlt dubai'
+    for _ in range(3):                       # e.g. '... business bay dubai uae', '... al barsha 1'
         for area in area_variants:
-            if s.endswith(" " + area):
-                rest = s[: -len(area)].strip()
+            m = re.search(rf"\s{re.escape(area)}(?:\s\d{{1,2}})?$", s)
+            if m:
+                rest = s[: m.start()].strip()
                 if len(rest.split()) >= 2:
                     s = rest
                     break

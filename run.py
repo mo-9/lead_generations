@@ -11,11 +11,13 @@ import time
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from itertools import combinations
 from pathlib import Path
+from urllib.parse import urlparse
 
 import settings as S
 from common import (Pacer, StopScraping, area_name_variants, box_from_setting, contains_phrase, excel_safe,
-                    fmt_duration, log, normalize_name, phone_digits, setup_logging)
+                    fmt_duration, host_of, log, normalize_name, phone_digits, setup_logging)
 from store import Store
 
 try:
@@ -127,6 +129,8 @@ def lead_problem(row) -> str:
     """'' if the place is a lead under the current filters, else the reason it isn't."""
     if row["details_status"] != "ok":
         return "details not loaded"
+    if (row["closed"] or "").startswith("Permanently closed"):     # Google's status text, not a review quote
+        return "permanently closed"
     rating = row["rating"] if row["rating"] is not None else row["card_rating"]
     reviews = row["review_count"] if row["review_count"] is not None else row["card_reviews"]
     if S.MIN_RATING and (rating is None or rating < S.MIN_RATING):
@@ -285,6 +289,31 @@ def log_enrich(i, total, row, status, data) -> None:
     log.info(f"   [{i}/{total}] {row['name']} -> {detail}")
 
 
+def website_key(url: str) -> str:
+    """Branches listing the same website share one visit (http/https, 'www.' and a trailing '/' don't matter)."""
+    p = urlparse(url)
+    return f"{host_of(url)}{p.path.rstrip('/')}?{p.query}"
+
+
+def by_website(rows) -> list[list]:
+    groups = defaultdict(list)
+    for r in rows:
+        groups[website_key(r["website"])].append(r)
+    return list(groups.values())
+
+
+def enrich_group(group, robots, **kwargs):
+    """One visit for rows sharing a website. Another spelling of the URL (http/https, www) listed by another row
+    is tried if the first can't be reached. All the rows' names count as 'this business' (not an outside client)."""
+    names = " ".join(dict.fromkeys(r["name"] for r in group))
+    status, data = "unreachable", {}
+    for website in dict.fromkeys(r["website"] for r in group):
+        status, data = enrich_website(website, names, robots, S.SKIP_WEBSITE_DOMAINS, **kwargs)
+        if status != "unreachable":
+            break
+    return status, data
+
+
 def run_enrichment(store: Store, plan, areas, context) -> None:
     hits = selected_hits(store, plan, areas)
     rows = [r for r in store.places() if r["place_key"] in hits and r["website"] and not lead_problem(r)
@@ -293,38 +322,43 @@ def run_enrichment(store: Store, plan, areas, context) -> None:
     needs_js = [r for r in rows if r["enrich_status"] == "needs_js"]
     robots = Robots()
     if static:
-        log.info(f"Visiting {len(static)} websites (homepage + contact / about / team pages)...")
+        groups = by_website(static)
+        log.info(f"Visiting {len(groups)} websites (homepage + contact / about / team pages)...")
         pool = ThreadPoolExecutor(ENRICH_WORKERS)
         try:
-            futures = {pool.submit(enrich_website, r["website"], r["name"], robots, S.SKIP_WEBSITE_DOMAINS): r
-                       for r in static}
-            for i, future in enumerate(as_completed(futures), 1):
-                row = futures[future]
+            futures = {pool.submit(enrich_group, g, robots): g for g in groups}
+            i = 0
+            for future in as_completed(futures):
                 try:
                     status, data = future.result()
                 except Exception:
                     status, data = "unreachable", {}
-                store.save_enrichment(row["place_key"], status, data)
-                log_enrich(i, len(static), row, status, data)
-                if status == "needs_js":
-                    needs_js.append(row)
+                for row in futures[future]:
+                    i += 1
+                    store.save_enrichment(row["place_key"], status, data)
+                    log_enrich(i, len(static), row, status, data)
+                    if status == "needs_js":
+                        needs_js.append(row)
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
     if needs_js:
-        log.info(f"Opening {len(needs_js)} websites that need a real browser to show their content...")
+        groups = by_website(needs_js)
+        log.info(f"Opening {len(groups)} websites that need a real browser to show their content...")
         page = context.new_page()
         try:
             fetch = browser_fetcher(page)
-            for i, row in enumerate(needs_js, 1):
+            i = 0
+            for group in groups:
                 try:
-                    status, data = enrich_website(row["website"], row["name"], robots, S.SKIP_WEBSITE_DOMAINS,
-                                                  fetch=fetch)
+                    status, data = enrich_group(group, robots, fetch=fetch)
                 except Exception:
                     status, data = "unreachable", {}
                 if status == "needs_js":
                     status = "nothing"
-                store.save_enrichment(row["place_key"], status, data)
-                log_enrich(i, len(needs_js), row, status, data)
+                for row in group:
+                    i += 1
+                    store.save_enrichment(row["place_key"], status, data)
+                    log_enrich(i, len(needs_js), row, status, data)
         finally:
             page.close()
 
@@ -337,11 +371,22 @@ def export(store: Store, plan, areas, out_dir: Path):
     persona_of = {k.lower(): p for p, k in plan}
     variants = area_name_variants(S.AREAS)
 
-    # chain = the same business name at 2+ different locations (among everything seen on Google Maps)
-    locations = defaultdict(set)
+    # chain = the same business name at 2+ different locations (among everything seen on Google Maps).
+    # Pins ~20 m apart, or ~100 m apart with the same (or a missing) phone, are one location listed twice.
+    pins = defaultdict(list)
     for p in places:
-        loc = (round(p["latitude"], 4), round(p["longitude"], 4)) if p["latitude"] is not None else p["place_key"]
-        locations[normalize_name(p["name"], variants)].add(loc)
+        if not (p["closed"] or "").startswith("Permanently closed"):     # an old, closed listing isn't a location
+            pins[normalize_name(p["name"], variants)].append(
+                (p["latitude"], p["longitude"], phone_digits(p["phone"] or p["card_phone"] or "")))
+
+    def one_location(a, b) -> bool:
+        if a[0] is None or a[1] is None or b[0] is None or b[1] is None:
+            return False
+        dlat, dlng = abs(a[0] - b[0]), abs(a[1] - b[1])
+        return (dlat < 0.0002 and dlng < 0.0002) or (
+            dlat < 0.001 and dlng < 0.001 and (not a[2] or not b[2] or a[2] == b[2]))
+
+    chains = {norm for norm, ps in pins.items() if any(not one_location(a, b) for a, b in combinations(ps, 2))}
 
     by_key = {p["place_key"]: p for p in places}
     rows, seen = [], set()
@@ -374,7 +419,7 @@ def export(store: Store, plan, areas, out_dir: Path):
             "facebook": p["facebook"] or "",
             "rating": rating if rating is not None else "",
             "review_count": reviews if reviews is not None else "",
-            "is_chain": "Yes" if len(locations[norm]) >= 2 else "No",
+            "is_chain": "Yes" if norm in chains else "No",
             "google_maps_url": maps_link(p["place_id"] or "", p["name"], p["maps_url"]),
             "place_id": p["place_id"] or p["ftid"] or "",
             "latitude": round(p["latitude"], 6) if p["latitude"] is not None else "",

@@ -45,15 +45,18 @@ class Robots:
         self._cache: dict = {}
         self._lock = threading.Lock()
 
-    def check(self, url: str) -> tuple[bool, float]:
+    def check(self, url: str) -> tuple[bool | None, float]:
         p = urlparse(url)
         origin = f"{p.scheme}://{p.netloc}"
         with self._lock:
+            cached = origin in self._cache
             rules = self._cache.get(origin)
-        if rules is None:
+        if not cached:
             rules = self._load(origin)
             with self._lock:
                 self._cache[origin] = rules
+        if rules is None:                      # robots.txt unreadable: no crawling this run, the next run asks again
+            return None, 0.0
         if rules is True or rules is False:
             return rules, 0.0
         return rules.can_fetch(USER_AGENT, url), float(rules.crawl_delay(USER_AGENT) or 0)
@@ -63,8 +66,10 @@ class Robots:
         try:
             r = _session().get(origin + "/robots.txt", timeout=TIMEOUT, allow_redirects=True)
         except requests.RequestException:
-            return False                       # can't read robots.txt -> don't crawl (RFC 9309)
-        if r.status_code in (401, 403) or r.status_code >= 500:
+            return None                        # can't read robots.txt -> don't crawl now (RFC 9309), retry later
+        if r.status_code >= 500 or r.status_code == 429:
+            return None
+        if r.status_code in (401, 403):
             return False
         if r.status_code >= 400:
             return True                        # no robots.txt -> everything allowed
@@ -73,14 +78,29 @@ class Robots:
         return rules
 
 
-def fetch_static(url: str) -> tuple[str | None, str]:
-    """(final_url, html) or (None, reason)."""
-    try:
-        r = _session().get(url, timeout=TIMEOUT, allow_redirects=True, stream=True)
-    except requests.exceptions.SSLError:
-        return None, "SSL error"
-    except requests.RequestException:
-        return None, "unreachable"
+MAX_REDIRECTS = 10
+
+
+def fetch_static(url: str, allow=None) -> tuple[str | None, str]:
+    """(final_url, html) or (None, reason). Each redirect target is first checked with allow(url):
+    True = follow, False = 'robots' (may not visit), None = 'unreachable' (can't tell now)."""
+    for _ in range(MAX_REDIRECTS + 1):
+        try:
+            r = _session().get(url, timeout=TIMEOUT, allow_redirects=False, stream=True)
+        except requests.exceptions.SSLError:
+            return None, "SSL error"
+        except requests.RequestException:
+            return None, "unreachable"
+        target = _session().get_redirect_target(r)
+        if not target:
+            break
+        r.close()
+        url = urldefrag(urljoin(url, target))[0]
+        ok = allow(url) if allow else True
+        if not ok:
+            return None, "robots" if ok is False else "unreachable"
+    else:
+        return None, "too many redirects"
     with r:
         if r.status_code != 200:
             return None, f"HTTP {r.status_code}"
@@ -88,10 +108,13 @@ def fetch_static(url: str) -> tuple[str | None, str]:
         if ctype and "html" not in ctype and "xml" not in ctype:
             return None, "not a web page"
         data = b""
-        for chunk in r.iter_content(65536):
-            data += chunk
-            if len(data) > MAX_BYTES:
-                break
+        try:
+            for chunk in r.iter_content(65536):
+                data += chunk
+                if len(data) > MAX_BYTES:
+                    break
+        except requests.RequestException:                   # cut-off / broken body
+            return None, "unreachable"
         encoding = r.encoding if r.encoding and r.encoding.lower() != "iso-8859-1" else None
     m = re.search(rb"<meta[^>]+charset=[\"']?([\w-]+)", data[:4096], re.I)
     if m:
@@ -104,12 +127,16 @@ def fetch_static(url: str) -> tuple[str | None, str]:
 
 def browser_fetcher(page):
     """Fetch pages with the real browser - only for sites whose content is drawn by JavaScript."""
-    def fetch(url: str) -> tuple[str | None, str]:
+    def fetch(url: str, allow=None) -> tuple[str | None, str]:
         try:
             response = page.goto(url, wait_until="domcontentloaded", timeout=30_000)
             if response is None or response.status != 200:
                 return None, f"HTTP {response.status if response else '?'}"
             page.wait_for_timeout(2500)
+            if allow and page.url.rstrip("/") != url.rstrip("/"):      # redirected: same check as fetch_static
+                ok = allow(page.url)
+                if not ok:
+                    return None, "robots" if ok is False else "unreachable"
             return page.url, page.content()
         except Exception:
             return None, "unreachable"
@@ -118,13 +145,50 @@ def browser_fetcher(page):
 
 # ───────────────────────────── which pages ─────────────────────────────
 
+# Team page words. A slug / link text is a team page when all its words are team words, qualifiers or fillers
+# ('Senior Management', 'Partners & Associates', 'فريقنا الطبي'), or when it ends in a clear team noun
+# ('Our Aesthetic Doctors') - not 'Wealth Management', 'Insurance Partners', 'Team Building', 'Join Our Team'.
+TEAM_NOUNS = {"team", "teams", "leadership", "leaders", "founder", "founders", "doctors", "dentists", "physicians",
+              "lawyers", "attorneys", "فريق", "فريقنا", "الفريق", "الأطباء", "أطباؤنا", "أطبائنا"}
+TEAM_AMBIGUOUS = {"management", "partners", "board", "people", "staff", "experts", "specialists", "مجلس"}
+TEAM_FOLLOWERS = {"members", "member", "directors", "associates", "careers"}  # 'team members', not 'members'
+TEAM_QUALIFIERS = {"medical", "dental", "legal", "clinical", "executive", "senior", "core", "expert", "aesthetic",
+                   "الطبي", "الإدارة", "العمل"}
+TEAM_FILLERS = {"our", "the", "meet", "us", "en", "ar", "of", "and", "page", "html", "htm", "php", "aspx", "asp", "jsp",
+                "shtml", "تعرف", "على"}
+TEAM_DENY = {"join", "hiring", "jobs", "vacancies", "vacancy", "building", "augmentation", "outsourcing", "support"}
+TEAM_KNOWN = TEAM_NOUNS | TEAM_AMBIGUOUS | TEAM_FOLLOWERS | TEAM_QUALIFIERS | TEAM_FILLERS
+
+
+def is_team_page(text: str) -> bool:
+    words = []
+    for w in re.split(r"[\W_]+", text.lower()):
+        w = re.sub(r"(?<=\D)\d+$", "", w)                             # 'team1'
+        if w and not w.isdigit():                                  # 'team-2', '01. Team'
+            bare = re.sub(r"^(?:our|the|meet)+", "", w)               # 'ourteam', 'meettheteam'
+            words.append(bare if bare in TEAM_KNOWN else w)
+    if not words or TEAM_DENY & set(words):
+        return False
+    if set(words) <= TEAM_KNOWN and set(words) & (TEAM_NOUNS | TEAM_AMBIGUOUS):
+        return True
+    content = [w for w in words if w not in TEAM_FILLERS]
+    return bool(content) and content[-1] in TEAM_NOUNS
+
+
 PAGE_KINDS = [
-    ("contact", re.compile(r"contact|get[-_ ]?in[-_ ]?touch|reach[-_ ]?us|enquir|inquir|اتصل|تواصل", re.I)),
-    ("about", re.compile(r"about|who[-_ ]?we[-_ ]?are|our[-_ ]?story|company[-_ ]?profile|من[-_ ]?نحن|عن[-_ ]", re.I)),
-    ("team", re.compile(r"team|leadership|management|founders?|our[-_ ]?people|doctors|dentists|physicians|"
-                        r"specialists|lawyers|attorneys|partners|experts|staff|board|فريق|الأطباء", re.I)),
+    ("contact", re.compile(r"contact(?![-_ ]?lens)|get[-_ ]?in[-_ ]?touch|reach[-_ ]?us|enquir|inquir|اتصل|تواصل",
+                           re.I).search),
+    ("about", re.compile(r"about|who[-_ ]?we[-_ ]?are|our[-_ ]?story|company[-_ ]?profile|من[-_ ]?نحن|عن[-_ ]",
+                         re.I).search),
+    ("team", is_team_page),
 ]
 SKIP_PATH = re.compile(r"\.(pdf|jpe?g|png|gif|webp|svg|zip|docx?|xlsx?|pptx?|mp4|mp3)$", re.I)
+
+
+def same_site(url: str, site: str) -> bool:
+    """url is on the website `site` (a host, 'www.' removed) or one of its subdomains."""
+    host = host_of(url)
+    return bool(host) and (host == site or host.endswith("." + site) or site.endswith("." + host))
 
 
 def pick_pages(soup: BeautifulSoup, base_url: str) -> dict[str, str]:
@@ -138,8 +202,7 @@ def pick_pages(soup: BeautifulSoup, base_url: str) -> dict[str, str]:
         url = urldefrag(urljoin(base_url, href))[0]
         if not url.startswith(("http://", "https://")):
             continue
-        host = host_of(url)
-        if host != site and not host.endswith("." + site) and not site.endswith("." + host):
+        if not same_site(url, site):
             continue
         path = urlparse(url).path
         segments = [s for s in unquote(path).split("/") if s]
@@ -147,8 +210,8 @@ def pick_pages(soup: BeautifulSoup, base_url: str) -> dict[str, str]:
             continue
         text = clean(a.get_text(" "))
         text = text if len(text.split()) <= 4 else ""
-        for kind, rx in PAGE_KINDS:
-            if rx.search(segments[-1]) or (text and rx.search(text)):
+        for kind, match in PAGE_KINDS:
+            if match(segments[-1]) or (text and match(text)):
                 score = (len(segments), len(path))
                 if kind not in best or score < best[kind][0]:
                     best[kind] = (score, url)
@@ -217,7 +280,8 @@ def best_email(emails: list[str], site_host: str, person: str = "") -> str:
             s -= 4
         elif local.startswith(WEAK_PREFIXES):
             s -= 1
-        if any(n in local for n in first_names):
+        if any(n in local if len(n) > 3 else re.search(rf"(?:^[a-z]?|[._+-]){n}(?:$|[._+\-\d])", local)
+               for n in first_names):                  # 'ali': ali@, mali@, ali1@ - not khalid@ or quality@
             s += 4
         return s
 
@@ -279,7 +343,7 @@ TITLE_TIERS = [
 ]
 TITLE_RES = [(t, re.compile(rf"(?<![A-Za-z])(?:{rx})(?![A-Za-z])", re.I)) for t, rx in TITLE_TIERS]
 VICE_RE = re.compile(r"vice[- ]president|(?<![A-Za-z])vp(?![A-Za-z])|deputy|assistant|associate", re.I)
-NOT_A_TITLE_RE = re.compile(r"former|(?<![A-Za-z])ex-|junior|assistant to|our partners|partner with|"
+NOT_A_TITLE_RE = re.compile(r"former|(?<![A-Za-z])ex-|junior|assistant to|our partners|partner with|patronage|"
                             r"partnership|directory|directions|^\s*(?:our\s+|the\s+)?board\s+of\s+directors\s*$",
                             re.I)
 # 'CEO at Acme Holding' in a testimonial is a client, not this business's decision-maker
@@ -291,11 +355,35 @@ AR_TITLES = [(1, r"الشريك المؤسس|المؤسس|مؤسس|المالك|
 AR_TITLE_RES = [(t, re.compile(rx)) for t, rx in AR_TITLES]
 
 
-def title_tier(text: str) -> int:
-    """1 = owner level, 2 = senior, 3 = director / VP / head / partner, 0 = not a leadership title."""
-    if not text or len(text) > 90 or NOT_A_TITLE_RE.search(text):
+# a title word right after these is not a job title ('Google Partner', 'Become a Partner', 'Business Owner')...
+TITLE_BEFORE_NOT = {"a", "an", "become", "your", "business", "google", "certified", "official", "premier",
+                    "preferred", "trusted", "strategic", "channel"}
+# ...nor a bare 'partner' / 'owner' followed by another word, unless it's one of these ('Partner Visa',
+# 'Partner Hospitals', 'Owner Operated' - but 'Owner & Lead Stylist', 'Owner Pharmacist', 'Partner - Tax')
+TITLE_AFTER_OK = {"and", "of", "at", "for", "in", "uae", "dubai", "mena", "gcc", "middle", "emea", "ksa",
+                  "international", "group", "general", "emeritus", "founder", "cofounder", "owner", "ceo",
+                  "director", "partner", "chairman", "president", "manager", "md", "chef", "pharmacist", "dentist",
+                  "doctor", "physician", "lawyer", "advocate", "architect", "designer", "stylist", "consultant",
+                  "surgeon", "orthodontist", "dermatologist", "engineer", "accountant", "trainer", "photographer"}
+
+
+def _title_in_context(text: str, m) -> bool:
+    before = re.findall(r"[\w'’]+", text[:m.start()])
+    if before and before[-1].lower() in TITLE_BEFORE_NOT:
+        return False
+    if m.group().lower() not in ("partner", "owner"):
+        return True
+    after = re.match(r"\s*([\w'’]+)", text[m.end():])        # punctuation next ('Partner - Tax') is fine
+    return not after or not re.match(r"\w", after.group(1)) or after.group(1).lower() in TITLE_AFTER_OK
+
+
+def title_tier(text: str, context: bool = True) -> int:
+    """1 = owner level, 2 = senior, 3 = director / VP / head / partner, 0 = not a leadership title.
+    context=False for a field that is a job title by definition (JSON-LD jobTitle)."""
+    if not text or len(text) > 90 or NOT_A_TITLE_RE.search(text) or text.rstrip().endswith("?"):
         return 0
-    tiers = [t for t, rx in TITLE_RES if rx.search(text)] + [t for t, rx in AR_TITLE_RES if rx.search(text)]
+    tiers = ([t for t, rx in TITLE_RES if any(not context or _title_in_context(text, m) for m in rx.finditer(text))]
+             + [t for t, rx in AR_TITLE_RES if rx.search(text)])
     if not tiers:
         return 0
     tier = min(tiers)
@@ -331,6 +419,8 @@ investment investments capital financial finance wealth insurance accounting aud
 architecture engineering logistics shipping cargo technology technologies tech software it systems
 restaurant cafe coffee salon spa beauty fitness academy institute school nursery training travel tours
 yacht yachts luxury jewellery jewelry boutique gallery motors cars
+dispute disputes resolution litigation arbitration corporate commercial advisory intellectual property employment
+construction banking private client criminal family regulatory compliance
 established founded started joined leads led has have holds brings believes graduated received completed
 specializes specialises offers provides built created opened launched works worked studied trained qualified
 comes came began since over years experience is was as an a his her he she they their who which that this
@@ -342,6 +432,9 @@ AR_STOP = set("من نحن عن اتصل بنا فريق فريقنا الشرك
               "خدماتنا رسالة رؤية رؤيتنا قيمنا كلمة المدير مدير المؤسس الرئيس التنفيذي العام الطبي".split())
 
 
+HISTORIC_RE = re.compile(r"zayed bin sultan|rashid bin saeed", re.I)   # founders of the UAE / modern Dubai
+
+
 def as_name(text: str, allow_arabic_without_title: bool = True) -> str:
     """Return a clean person name if `text` is one (optionally with 'Dr.' and degrees), else ''."""
     text = clean(text).strip(" ,.:;|-–—")
@@ -349,6 +442,8 @@ def as_name(text: str, allow_arabic_without_title: bool = True) -> str:
         return ""
     text = LEAD_IN_RE.sub("", text)
     text = CREDENTIALS_RE.sub("", text).strip(" ,")
+    if HISTORIC_RE.search(text):                     # 'the vision of our Founder, Sheikh Zayed bin Sultan'
+        return ""
     m = AR_NAME_RE.match(text)
     if m:
         words = m.group(2).split()
@@ -462,7 +557,7 @@ def jsonld_data(soup: BeautifulSoup):
                 else:
                     continue
                 title = title if isinstance(title, str) else default
-                tier = title_tier(title or "")
+                tier = title_tier(title or "", context=False)
                 name = as_name(name if isinstance(name, str) else "")
                 if name and tier:
                     people.append((tier, name, tidy_title(title), -1))
@@ -527,8 +622,8 @@ def _drop_testimonials(soup: BeautifulSoup) -> None:
 
 def _is_external(title: str, business_name: str) -> bool:
     m = EXTERNAL_TITLE_RE.search(title or "")
-    if not m:
-        return False
+    if not m or re.fullmatch(r"(?:the\s+)?(?:company|group|firm|clinic|practice)\.?", m.group(1).strip(), re.I):
+        return False                                   # 'Founder of the Group' = this business
     own = {w for w in re.findall(r"\w{4,}", (business_name or "").lower())}
     return not own & set(re.findall(r"\w{4,}", m.group(1).lower()))
 
@@ -591,11 +686,13 @@ def enrich_website(website: str, business_name: str, robots: Robots, skip_domain
     if not host or domain_in(host, skip_domains):
         return "skipped", {}
     allowed, delay = robots.check(website)
+    if allowed is None:
+        return "unreachable", {}
     if not allowed:
         return "robots", {}
-    final_url, html = fetch(website)
+    final_url, html = fetch(website, lambda u: robots.check(u)[0])     # a moved homepage: its robots.txt rules
     if final_url is None:
-        return "unreachable", {}
+        return ("robots" if html == "robots" else "unreachable"), {}
     if fetch is fetch_static and looks_empty(html):
         return "needs_js", {}
     pages = [("home", final_url, html)]
@@ -609,8 +706,11 @@ def enrich_website(website: str, business_name: str, robots: Robots, skip_domain
         allowed, delay = robots.check(url)
         if not allowed:
             continue
-        time.sleep(max(random.uniform(*PAGE_DELAY), min(delay, 30)))
-        page_url, page_html = fetch(url)
+        if delay > 60:                                  # the site asks for very slow visits: homepage only
+            break
+        time.sleep(max(random.uniform(*PAGE_DELAY), delay))
+        site = host_of(final_url)
+        page_url, page_html = fetch(url, lambda u: robots.check(u)[0] if same_site(u, site) else False)
         if page_url:
             pages.append((kind, page_url, page_html))
     data = analyse(pages, host_of(final_url) or host, business_name)

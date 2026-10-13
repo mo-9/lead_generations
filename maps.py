@@ -123,7 +123,9 @@ DETAILS_JS = r"""
       if (/^\s*[\d.,]+\s*[KkMm]?\s+reviews?\s*$/i.test(l)) { reviewsText = l; break; }
     }
   }
-  const closed = ((root.innerText || '').match(/Permanently closed|Temporarily closed/i) || [''])[0];
+  // Google's status starts a line or follows a '·'; a review quoting "permanently closed" doesn't count
+  const closed = ((root.innerText || '').match(/(?:^|[·⋅])[\s\u200e\u200f]*(Permanently closed|Temporarily closed)\b/m)
+                  || ['', ''])[1];
   return {
     url: location.href,
     name: title ? title.textContent.trim() : '',
@@ -322,7 +324,9 @@ class MapsClient:
                 raw = self.page.evaluate(CARDS_JS)
                 cards = [c for c in (parse_card(r) for r in raw) if c]
                 if state.get("limited"):
-                    hidden = len(cards) >= 5 and not any(c["card_reviews"] is not None for c in cards)
+                    # rated places without a count = counts hidden ('No reviews' cards don't count either way)
+                    rated = [c for c in cards if c["card_rating"] is not None]
+                    hidden = bool(rated) and all(c["card_reviews"] is None for c in rated)
                     if hidden and self.needs_review_counts:
                         self.pacer.page_problem("block", "limited view, review counts hidden", LIMITED_ADVICE)
                         continue                       # same search again after the backoff
