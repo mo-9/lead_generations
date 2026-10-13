@@ -402,9 +402,12 @@ NAME_CORE = rf"{TOKEN}(?:[\s\-]+(?:{CONNECT}[\s\-]+)?{TOKEN}){{1,3}}"
 NAME_FULL_RE = re.compile(rf"(?:{HONORIFIC})?{NAME_CORE}")
 LEAD_IN_RE = re.compile(r"^(?:meet|about|by|message from|a message from|a word from|word from|letter from|"
                         r"note from|introducing|welcome from)\s+", re.I)
-CREDENTIALS_RE = re.compile(
-    r"(?:[,\s]+(?:BDS|DDS|DMD|MBBS|MBChB|MD|DO|PhD|MSc|MS|MA|BA|BSc|MBA|MPH|FRCS|MRCS|MFDS|MJDF|FDS|"
-    r"DClinDent|MClinDent|LLB|LLM|JD|CPA|ACCA|FCCA|CFA|CA|PE|RIBA|PMP|Esq|FRCP|MRCP|DDS)\.?(?:\s*\([^)]*\))?)+\s*$")
+CREDENTIALS = ("BDS|DDS|DMD|MBBS|MBChB|MD|DO|PhD|MSc|MS|MA|BA|BSc|MBA|MPH|FRCS|MRCS|MFDS|MJDF|FDS|"
+               "DClinDent|MClinDent|LLB|LLM|JD|CPA|ACCA|FCCA|CFA|CA|PE|RIBA|PMP|Esq|FRCP|MRCP")
+CREDENTIALS_RE = re.compile(rf"(?:[,\s]+(?:{CREDENTIALS})\.?(?:\s*\([^)]*\))?)+\s*$")
+# a line of degrees only ('MBChB MRCGP AFMCP') is not a name
+CREDENTIAL_WORDS = set(CREDENTIALS.split("|")) | {"MRCGP", "AFMCP", "MRCOG", "FRCOG", "DRCOG", "MRCPCH", "FAAD",
+                                                  "FDSRCS", "MOrth", "MPhil", "DPhil", "FACS", "FICD", "FICOI"}
 NAME_STOP = set("""
 about us our the team meet contact home read more view profile learn book appointment call email phone
 address location follow copyright rights reserved privacy policy terms welcome message mission vision values
@@ -415,6 +418,8 @@ consultants management partners associates advocates legal law firm chambers off
 trading real estate properties director founder ceo chairman owner partner manager managing general executive
 chief officer head senior lead specialist consultant doctor dentist orthodontist surgeon physician
 dermatologist practitioner board members member staff people leadership story history testimonials reviews
+trainer educator instructor coach expert nurse therapist hygienist technician aesthetician beautician injector
+advanced aesthetic aesthetics cosmetic clinical certified
 faq blog news events careers gallery portfolio projects clients award awards english arabic menu close open
 and of for with in at to by from your we is are our get started now today here new top best world group
 investment investments capital financial finance wealth insurance accounting audit tax design interior
@@ -456,7 +461,7 @@ def as_name(text: str, allow_arabic_without_title: bool = True) -> str:
         return ""
     words = re.sub(rf"^{HONORIFIC}", "", text).replace("-", " ").split()
     core = [w for w in words if not re.fullmatch(CONNECT, w, re.I)]
-    if len(core) < 2 or any(w.lower().strip("'’") in NAME_STOP for w in core):
+    if len(core) < 2 or any(w.lower().strip("'’") in NAME_STOP or w.strip(".,") in CREDENTIAL_WORDS for w in core):
         return ""
     if text.isupper():
         text = " ".join(_cap(w) for w in text.split())
