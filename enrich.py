@@ -21,7 +21,9 @@ from common import clean, domain_in, host_of
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36")
 HEADERS = {"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
-           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+           # urllib3 also offers zstd when the zstandard package is installed (conda), then fails to decode it
+           "Accept-Encoding": "gzip, deflate"}
 TIMEOUT = 20
 MAX_BYTES = 3_000_000
 PAGE_DELAY = (1.5, 3.5)          # pause between pages of the same website
