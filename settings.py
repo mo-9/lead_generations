@@ -75,7 +75,8 @@ BROWSER = "chrome"                  # "chrome" = your installed Google Chrome, o
 # ════════════════════════════════════════════════════════════════════
 
 # Google Maps shows at most ~120 results per search. A search returning at least
-# this many is treated as cut off, and its box is split into 4 smaller boxes.
+# this many is treated as cut off, and its box is split into 4 smaller boxes - unless
+# the last results are all outside the box (Google pads short lists with far-away places).
 CAP_THRESHOLD = 100
 MAX_SPLIT_DEPTH = 4                 # how many times a box may be split (4 -> boxes 16x smaller)
 
